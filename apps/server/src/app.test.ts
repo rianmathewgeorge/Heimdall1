@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
@@ -56,5 +58,34 @@ describe("HTTP boundary", () => {
     });
     expect(oversized.statusCode).toBe(413);
     await app.close();
+  });
+});
+
+/**
+ * A port already in use is the commonest way to fail to start, and it is a
+ * STARTUP failure, not a crash. Routing it through the uncaughtException
+ * handler buried the one useful fact ("port 3000 is taken") under a stack trace
+ * and the words "unhandled error — shutting down cleanly", which reads as if
+ * the app broke rather than as if another copy is already running.
+ */
+describe("startup failures", () => {
+  it("reports a port conflict as an actionable message, not a crash", async () => {
+    const blocker = createServer(() => {});
+    await new Promise<void>((r) => blocker.listen(0, "127.0.0.1", r));
+    const port = (blocker.address() as AddressInfo).port;
+
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), stubService(""));
+    let code: string | undefined;
+    try {
+      await app.listen({ host: "127.0.0.1", port });
+    } catch (error) {
+      code = (error as NodeJS.ErrnoException).code;
+    }
+    // listen() REJECTS rather than emitting an unhandled error, which is what
+    // lets index.ts translate it into a clear message and a clean exit
+    expect(code).toBe("EADDRINUSE");
+
+    await app.close();
+    await new Promise<void>((r) => blocker.close(() => r()));
   });
 });

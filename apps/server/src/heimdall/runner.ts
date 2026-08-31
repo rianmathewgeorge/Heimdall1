@@ -97,6 +97,25 @@ export function buildReconPermit(config: AppConfig, runId: string, agentId: stri
  * same grant, or its own inference traffic gets denied by the same rule
  * recon was built to avoid (P-07).
  */
+/**
+ * A runtime that cannot start at all is not a planning failure, and must not be
+ * reported as one. Without this the operator was told "recon did not produce a
+ * valid manifest — execution refused", which is true but useless: the actual
+ * cause was that the `codex` binary does not exist on the host. Name it.
+ */
+export function explainRuntimeFailure(message: string, runtimeProvider: string, codexBin: string): string | null {
+  const missingBinary = message.includes("ENOENT") || /spawn .* ENOENT/.test(message);
+  if (!missingBinary) return null;
+  if (runtimeProvider === "container") {
+    return `the container engine could not be started (${message}). Is Docker running?`;
+  }
+  return (
+    `the "${codexBin}" binary is not installed on this host, so RUNTIME_PROVIDER=local-process cannot run anything.\n` +
+    "  Run the containerised runtime instead:  npm run poc\n" +
+    `  ...or install Codex on the host:        npm i -g @openai/codex`
+  );
+}
+
 export function grantProviderHost(permit: Permit, config: AppConfig): Permit {
   const host = new URL(activeProvider(config).baseUrl).hostname.toLowerCase();
   if (permit.grantedHosts.includes(host)) return permit;
@@ -179,6 +198,23 @@ export class HeimdallRunner implements AgentRunner {
      */
     void this.preflightProxyImage().catch(() => undefined);
     void this.preflightRuntimeImage().catch(() => undefined);
+    void this.preflightRuntimeProvider().catch(() => undefined);
+  }
+
+  /**
+   * RUNTIME_PROVIDER defaults to local-process, which needs the `codex` binary
+   * ON THE HOST. `npm run poc` sets container mode; `npm start` and `npm run dev`
+   * do not — so a machine without Codex installed fails on its first run with a
+   * message about manifests. Check once, at boot, and say what to run.
+   */
+  private async preflightRuntimeProvider(): Promise<void> {
+    if (this.config.runtimeProvider !== "local-process") return;
+    if (await this.inner.isAvailable()) return;
+    log("warn", "boot",
+      `RUNTIME_PROVIDER=local-process but "${this.config.codexBin}" is not runnable on this host — ` +
+      "every run will fail before it starts.\n" +
+      "  Use the containerised runtime:  npm run poc\n" +
+      `  ...or install Codex here:       npm i -g @openai/codex`);
   }
 
   /**
@@ -432,6 +468,14 @@ export class HeimdallRunner implements AgentRunner {
         } catch (error) {
           manifestError = error instanceof ManifestError ? error.message : (error as Error).message;
           manifestCause = error;
+          const explained = explainRuntimeFailure(manifestError, this.config.runtimeProvider, this.config.codexBin);
+          if (explained !== null) {
+            // the runtime never ran: stop retrying something that cannot work,
+            // and report the cause instead of the symptom
+            log("error", runId, "runtime is not runnable — " + explained);
+            emit({ stage: "recon", severity: "error", message: explained });
+            throw new Error("HEIMDALL: " + explained, { cause: error });
+          }
           log("warn", runId, `recon attempt ${attempt + 1} failed`, { reason: manifestError });
           emit({
             stage: "manifest", severity: "warn",

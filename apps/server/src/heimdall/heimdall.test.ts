@@ -14,7 +14,7 @@ import {
 import { capabilityMatches, decideEgress } from "./proxy.js";
 import { HeimdallStore, appendJournal, readJournal, CANARY_REL_PATH, plantCanary } from "./store.js";
 import { plannerMessages, workspaceDigest } from "./planner.js";
-import { buildReconPermit, grantProviderHost, relativizeManifestPaths } from "./runner.js";
+import { buildReconPermit, grantProviderHost, relativizeManifestPaths, explainRuntimeFailure } from "./runner.js";
 import type { AppConfig } from "../config.js";
 import { CONTAINER_WORKSPACE_ROOT } from "../constants.js";
 import type { Capability, Manifest, Precedent, RunContext, StandingPolicy } from "./types.js";
@@ -933,5 +933,34 @@ describe("manifest normalisation", () => {
     expect(() => parseManifest(JSON.stringify({ error: "cannot determine" }))).toThrow(/could not determine/);
     // and it does not invent a capability that was never declared
     expect(parseManifest(m([{ op: "FS_READ", paths: ["a"] }])).capabilities).toHaveLength(1);
+  });
+});
+
+/* ══ startup and runtime diagnosis ══ */
+describe("runtime failures name their cause", () => {
+  /*
+   * OBSERVED. RUNTIME_PROVIDER defaults to local-process, which needs `codex`
+   * on the HOST; only `npm run poc` switches to containers. On a machine
+   * without Codex the whole run died in ~200ms and reported "recon did not
+   * produce a valid manifest — execution refused", which is true and useless.
+   * The operator needs the actual cause and the command that fixes it.
+   */
+  test("a missing codex binary is reported as such, not as a manifest problem", () => {
+    const explained = explainRuntimeFailure("spawn codex ENOENT", "local-process", "codex");
+    expect(explained).not.toBeNull();
+    expect(explained).toContain("not installed on this host");
+    expect(explained).toContain("npm run poc");
+    expect(explained).not.toContain("manifest");
+  });
+
+  test("in container mode the same failure points at the engine, not the binary", () => {
+    const explained = explainRuntimeFailure("spawn docker ENOENT", "container", "codex");
+    expect(explained).toContain("container engine");
+    expect(explained).toContain("Docker");
+  });
+
+  test("a genuine planning failure is left alone", () => {
+    expect(explainRuntimeFailure('invalid manifest: NET_READ requires "host"', "container", "codex")).toBeNull();
+    expect(explainRuntimeFailure("provider returned 429", "local-process", "codex")).toBeNull();
   });
 });

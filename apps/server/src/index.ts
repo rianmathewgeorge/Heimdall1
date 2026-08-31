@@ -3,6 +3,7 @@ import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import { loadConfig, writeCodexConfig } from "./config.js";
 import { createHeimdall, registerHeimdallRoutes } from "./heimdall/index.js";
+import { log } from "./heimdall/store.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
 
@@ -46,4 +47,28 @@ const fatal = (kind: string) => (error: unknown) => {
 process.on("unhandledRejection", fatal("unhandledRejection"));
 process.on("uncaughtException", fatal("uncaughtException"));
 
-await app.listen({ host: config.host, port: config.port });
+/*
+ * Startup failures are not crashes, and must not be reported as one. A port
+ * that is already in use is the commonest way to fail to start, and routing it
+ * through the uncaughtException handler buried the one useful fact under a
+ * stack trace and the words "unhandled error". Say what is wrong and what to do.
+ */
+try {
+  await app.listen({ host: config.host, port: config.port });
+} catch (error) {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === "EADDRINUSE") {
+    log("error", "boot",
+      `port ${String(config.port)} is already in use — another server is running.\n` +
+      `  Stop it:      lsof -ti tcp:${String(config.port)} | xargs kill\n` +
+      `  Or use another port:  PORT=3001 npm start`);
+  } else if (code === "EACCES") {
+    log("error", "boot",
+      `not permitted to bind port ${String(config.port)} — ports below 1024 need elevated privileges. ` +
+      "Use PORT=3000 or higher.");
+  } else {
+    log("error", "boot", `could not start the server: ${(error as Error).message}`);
+  }
+  await heimdall.stop().catch(() => undefined);
+  process.exit(1);
+}
