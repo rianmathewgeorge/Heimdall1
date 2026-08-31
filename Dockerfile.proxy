@@ -1,0 +1,30 @@
+# HEIMDALL — proxy sidecar image.
+#
+# Runs one container per run-phase, attached to both heimdall-internal (the
+# isolated agent network) and a normal egress network. It is the only thing
+# an agent container can reach; it is the only thing that can reach the
+# internet. See apps/server/src/heimdall/proxy-standalone.ts.
+#
+# No node_modules: proxy.ts and its transitive deps (engine/store/termsheet/
+# types) use only Node built-ins, so the runtime stage stays minimal.
+ARG NODE_IMAGE=node:22-bookworm-slim
+FROM ${NODE_IMAGE} AS build
+WORKDIR /app
+
+COPY package.json package-lock.json tsconfig.base.json ./
+COPY apps/server/package.json apps/server/package.json
+COPY apps/web/package.json apps/web/package.json
+RUN npm ci
+
+COPY apps/server ./apps/server
+RUN npm run build -w @launchpad/server
+
+FROM ${NODE_IMAGE} AS runtime
+ENV NODE_ENV=production
+WORKDIR /app
+
+COPY --from=build /app/apps/server/package.json ./apps/server/package.json
+COPY --from=build /app/apps/server/dist/heimdall ./apps/server/dist/heimdall
+
+USER node
+CMD ["node", "apps/server/dist/heimdall/proxy-standalone.js"]

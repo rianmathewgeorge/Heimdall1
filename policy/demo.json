@@ -1,0 +1,7 @@
+{
+  "allowedHosts": ["registry.npmjs.org", "api.github.com"],
+  "standingGrants": [{ "host": "api.github.com", "dataClass": "source_code" }],
+  "allowedCommands": ["npm", "npx", "node", "tsc", "git", "ls", "cat", "mkdir", "pwd", "echo", "grep", "find"],
+  "maxDurationMs": 600000,
+  "maxNarrowPaths": 20
+}
